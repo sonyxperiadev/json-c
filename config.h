@@ -1,11 +1,17 @@
 /* config.h.  Generated from config.h.in by configure.  */
 /* config.h.in.  Generated from configure.ac by autoheader.  */
 
-/* Enable RDRANR Hardware RNG Hash Seed */
+/* Enable RDRAND Hardware RNG Hash Seed */
 /* #undef ENABLE_RDRAND */
+
+/* Enable partial threading support */
+/* #undef ENABLE_THREADING */
 
 /* Define if .gnu.warning accepts long strings. */
 /* #undef HAS_GNU_WARNING_LONG */
+
+/* Has atomic builtins */
+#define HAVE_ATOMIC_BUILTINS 1
 
 /* Define to 1 if you have the declaration of `INFINITY', and to 0 if you
    don't. */
@@ -127,7 +133,10 @@
 #define HAVE_VSYSLOG 1
 
 /* Define to 1 if you have the <xlocale.h> header file. */
-#define HAVE_XLOCALE_H 1
+/* #undef HAVE_XLOCALE_H */
+
+/* Have __thread */
+#define HAVE___THREAD 1
 
 /* Public define for json_inttypes.h */
 #define JSON_C_HAVE_INTTYPES_H 1
@@ -145,7 +154,7 @@
 #define PACKAGE_NAME "json-c"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "json-c 0.12.99"
+#define PACKAGE_STRING "json-c 0.13.99"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "json-c"
@@ -154,10 +163,13 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "0.12.99"
+#define PACKAGE_VERSION "0.13.99"
 
 /* The number of bytes in type int */
 #define SIZEOF_INT 4
+
+/* The number of bytes in type int64_t */
+#define SIZEOF_INT64_T 8
 
 /* The number of bytes in type long */
 #define SIZEOF_LONG 8
@@ -168,11 +180,14 @@
 /* The number of bytes in type size_t */
 #define SIZEOF_SIZE_T 8
 
+/* Specifier for __thread */
+#define SPEC___THREAD __thread
+
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
 
 /* Version number of package */
-#define VERSION "0.12.99"
+#define VERSION "0.13.99"
 
 /* Define to empty if `const' does not conform to ANSI C. */
 /* #undef const */
