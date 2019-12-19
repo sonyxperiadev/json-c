@@ -2,6 +2,10 @@
 #ifndef _json_c_json_visit_h_
 #define _json_c_json_visit_h_
 
+/**
+ * @file
+ * @brief Methods for walking a tree of objects.
+ */
 #include "json_object.h"
 
 typedef int (json_c_visit_userfunc)(json_object *jso, int flags,
@@ -27,8 +31,8 @@ typedef int (json_c_visit_userfunc)(json_object *jso, int flags,
  * Returns <0 if an error occurred during iteration, including if
  *  userfunc returned JSON_C_VISIT_RETURN_ERROR.
  */
-int json_c_visit(json_object *jso, int future_flags,
-                 json_c_visit_userfunc userfunc, void *userarg);
+JSON_EXPORT int json_c_visit(json_object *jso, int future_flags,
+                 json_c_visit_userfunc *userfunc, void *userarg);
 
 /**
  * Passed to json_c_visit_userfunc as one of the flags values to indicate

@@ -22,6 +22,7 @@
 # include <strings.h>
 #endif /* HAVE_STRINGS_H */
 
+#ifndef SIZE_T_MAX
 #if SIZEOF_SIZE_T == SIZEOF_INT
 #define SIZE_T_MAX UINT_MAX
 #elif SIZEOF_SIZE_T == SIZEOF_LONG
@@ -30,6 +31,7 @@
 #define SIZE_T_MAX ULLONG_MAX
 #else
 #error Unable to determine size of size_t
+#endif
 #endif
 
 #include "arraylist.h"
@@ -96,7 +98,8 @@ array_list_put_idx(struct array_list *arr, size_t idx, void *data)
 {
   if (idx > SIZE_T_MAX - 1 ) return -1;
   if(array_list_expand_internal(arr, idx+1)) return -1;
-  if(arr->array[idx]) arr->free_fn(arr->array[idx]);
+  if(idx < arr->length && arr->array[idx])
+    arr->free_fn(arr->array[idx]);
   arr->array[idx] = data;
   if(arr->length <= idx) arr->length = idx + 1;
   return 0;
@@ -109,16 +112,16 @@ array_list_add(struct array_list *arr, void *data)
 }
 
 void
-array_list_sort(struct array_list *arr, int(*sort_fn)(const void *, const void *))
+array_list_sort(struct array_list *arr, int(*compar)(const void *, const void *))
 {
-  qsort(arr->array, arr->length, sizeof(arr->array[0]), sort_fn);
+  qsort(arr->array, arr->length, sizeof(arr->array[0]), compar);
 }
 
 void* array_list_bsearch(const void **key, struct array_list *arr,
-		int (*sort_fn)(const void *, const void *))
+		int (*compar)(const void *, const void *))
 {
 	return bsearch(key, arr->array, arr->length, sizeof(arr->array[0]),
-			sort_fn);
+			compar);
 }
 
 size_t

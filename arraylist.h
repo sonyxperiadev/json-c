@@ -9,6 +9,12 @@
  *
  */
 
+/**
+ * @file
+ * @brief Internal methods for working with json_type_array objects.
+ *        Although this is exposed by the json_object_get_array() method,
+ *        it is not recommended for direct use.
+ */
 #ifndef _arraylist_h_
 #define _arraylist_h_
 
@@ -27,6 +33,7 @@ struct array_list
   size_t size;
   array_list_free_fn *free_fn;
 };
+typedef struct array_list array_list;
 
 extern struct array_list*
 array_list_new(array_list_free_fn *free_fn);
@@ -49,9 +56,9 @@ array_list_length(struct array_list *al);
 extern void
 array_list_sort(struct array_list *arr, int(*compar)(const void *, const void *));
 
-extern void* array_list_bsearch(const void **key,
-		struct array_list *arr,
-		int (*sort_fn)(const void *, const void *));
+extern void*
+array_list_bsearch(const void **key, struct array_list *arr,
+		int (*compar)(const void *, const void *));
 
 extern int 
 array_list_del_idx(struct array_list *arr, size_t idx, size_t count);

@@ -1,4 +1,5 @@
-#include <errno.h>
+#include "strerror_override.h"
+#include "strerror_override_private.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -19,7 +20,7 @@ static const char *input_json_str = "{ "
 	"'foo': ['bar', 'baz'], "
 	"'': 0, "
 	"'a/b': 1, "
-	"'c\%d': 2, "
+	"'c%d': 2, "
 	"'e^f': 3, "
 	"'g|h': 4, "
 	"'i\\\\j': 5, "
@@ -237,7 +238,7 @@ static void test_example_set()
 	assert(0 == json_pointer_set(&jo1, "/", json_object_new_int(9)));
 	printf("PASSED - SET - / == 9\n");
 
-	jo2 = json_tokener_parse("{ 'foo': [ 'bar', 'cod' ], '': 9, 'a/b': 1, 'c\%d': 2, 'e^f': 3, 'g|h': 4, 'i\\\\j': 5, 'k\\\"l': 6, ' ': 7, 'm~n': 8, 'fud': { 'gaw': [ 0, 2, 3, 4 ] } }");
+	jo2 = json_tokener_parse("{ 'foo': [ 'bar', 'cod' ], '': 9, 'a/b': 1, 'c%d': 2, 'e^f': 3, 'g|h': 4, 'i\\\\j': 5, 'k\\\"l': 6, ' ': 7, 'm~n': 8, 'fud': { 'gaw': [ 0, 2, 3, 4 ] } }");
 	assert(json_object_equal(jo2, jo1));
 	printf("PASSED - SET - Final JSON is: %s\n", json_object_get_string(jo1));
 	json_object_put(jo2);
@@ -280,6 +281,8 @@ static void test_wrong_inputs_set()
 
 int main(int argc, char **argv)
 {
+	_json_c_strerror_enable = 1;
+
 	test_example_get();
 	test_recursion_get();
 	test_wrong_inputs_get();

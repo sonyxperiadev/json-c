@@ -1,5 +1,10 @@
 #!/bin/sh
 
+if [ ! -z "$JSONC_TEST_TRACE" ] ; then
+	VERBOSE=1
+	set -x
+	set -v
+fi
 # Make sure srcdir is an absolute path.  Supply the variable
 # if it does not exist.  We want to be able to run the tests
 # stand-alone!!
@@ -50,6 +55,14 @@ echo "=== Running test $progname"
 CMP="${CMP-cmp}"
 
 use_valgrind=${USE_VALGRIND-1}
+case "${use_valgrind}" in
+	[0Nn]*)
+		use_valgrind=0
+		;;
+	*)
+		use_valgrind=1
+		;;
+esac
 valgrind_path=$(which valgrind 2> /dev/null)
 if [ -z "${valgrind_path}" -o ! -x "${valgrind_path}" ] ; then
 	use_valgrind=0
