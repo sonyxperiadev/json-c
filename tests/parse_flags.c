@@ -19,10 +19,11 @@ static struct {
 	{ "plain", JSON_C_TO_STRING_PLAIN },
 	{ "spaced", JSON_C_TO_STRING_SPACED },
 	{ "pretty", JSON_C_TO_STRING_PRETTY },
+	{ "pretty_tab", JSON_C_TO_STRING_PRETTY_TAB },
 };
 
 #ifndef NELEM
-#define NELEM(x) (sizeof(x) / sizeof(&x[0]))
+#define NELEM(x) (sizeof(x) / sizeof(x[0]))
 #endif
 
 int parse_flags(int argc, char **argv)

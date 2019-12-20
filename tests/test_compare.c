@@ -8,7 +8,6 @@
 
 #include "json_inttypes.h"
 #include "json_object.h"
-#include "json_tokener.h"
 
 int main()
 {
@@ -18,19 +17,19 @@ int main()
 	struct json_object *int3 = json_object_new_int(1);
 
 	if (!json_object_equal(int1, int2))
-		printf("JSON integer comparision is correct\n");
+		printf("JSON integer comparison is correct\n");
 	else
-		printf("JSON integer comparision failed\n");
+		printf("JSON integer comparison failed\n");
 
 	if (json_object_equal(int1, int1))
-		printf("JSON same object comparision is correct\n");
+		printf("JSON same object comparison is correct\n");
 	else
-		printf("JSON same object comparision failed\n");
+		printf("JSON same object comparison failed\n");
 
 	if (json_object_equal(int2, int3))
-		printf("JSON same integer comparision is correct\n");
+		printf("JSON same integer comparison is correct\n");
 	else
-		printf("JSON same integer comparision failed\n");
+		printf("JSON same integer comparison failed\n");
 
 	json_object_put(int1);
 	json_object_put(int2);

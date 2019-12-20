@@ -9,6 +9,10 @@
  *
  */
 
+/**
+ * @file
+ * @brief Methods to parse an input string into a tree of json_object objects.
+ */
 #ifndef _json_tokener_h_
 #define _json_tokener_h_
 
@@ -75,17 +79,50 @@ struct json_tokener_srec
 
 #define JSON_TOKENER_DEFAULT_DEPTH 32
 
+/**
+ * Internal state of the json parser.
+ * Do not access any fields of this structure directly.
+ * Its definition is published due to historical limitations
+ * in the json tokener API, and will be changed to be an opaque
+ * type in the future.
+ */
 struct json_tokener
 {
   char *str;
   struct printbuf *pb;
-  int max_depth, depth, is_double, st_pos, char_offset;
+  int max_depth, depth, is_double, st_pos;
+  /**
+   * See json_tokener_get_parse_end()
+   */
+  int char_offset;
   enum json_tokener_error err;
   unsigned int ucs_char;
   char quote_char;
   struct json_tokener_srec *stack;
   int flags;
 };
+
+/**
+ * Return the offset of the byte after the last byte parsed
+ * relative to the start of the most recent string passed in
+ * to json_tokener_parse_ex().  i.e. this is where parsing
+ * would start again if the input contains another JSON object
+ * after the currently parsed one.
+ *
+ * Note that when multiple parse calls are issued, this is *not* the
+ * total number of characters parsed.
+ *
+ * In the past this would have been accessed as tok->char_offset.
+ *
+ * See json_tokener_parse_ex() for an example of how to use this.
+ */
+JSON_EXPORT size_t json_tokener_get_parse_end(struct json_tokener *tok);
+
+
+/**
+ * @deprecated Unused in json-c code
+ */
+typedef struct json_tokener json_tokener;
 
 /**
  * Be strict when parsing JSON input.  Use caution with
@@ -105,7 +142,7 @@ struct json_tokener
  *
  * @return a generic error message is returned if an invalid error value is provided.
  */
-const char *json_tokener_error_desc(enum json_tokener_error jerr);
+JSON_EXPORT const char *json_tokener_error_desc(enum json_tokener_error jerr);
 
 /**
  * Retrieve the error caused by the last call to json_tokener_parse_ex(),
@@ -114,21 +151,21 @@ const char *json_tokener_error_desc(enum json_tokener_error jerr);
  * When parsing a JSON string in pieces, if the tokener is in the middle
  * of parsing this will return json_tokener_continue.
  *
- * See also json_tokener_error_desc().
+ * @see json_tokener_error_desc().
  */
-enum json_tokener_error json_tokener_get_error(struct json_tokener *tok);
+JSON_EXPORT enum json_tokener_error json_tokener_get_error(struct json_tokener *tok);
 
-extern struct json_tokener* json_tokener_new(void);
-extern struct json_tokener* json_tokener_new_ex(int depth);
-extern void json_tokener_free(struct json_tokener *tok);
-extern void json_tokener_reset(struct json_tokener *tok);
-extern struct json_object* json_tokener_parse(const char *str);
-extern struct json_object* json_tokener_parse_verbose(const char *str, enum json_tokener_error *error);
+JSON_EXPORT struct json_tokener* json_tokener_new(void);
+JSON_EXPORT struct json_tokener* json_tokener_new_ex(int depth);
+JSON_EXPORT void json_tokener_free(struct json_tokener *tok);
+JSON_EXPORT void json_tokener_reset(struct json_tokener *tok);
+JSON_EXPORT struct json_object* json_tokener_parse(const char *str);
+JSON_EXPORT struct json_object* json_tokener_parse_verbose(const char *str, enum json_tokener_error *error);
 
 /**
  * Set flags that control how parsing will be done.
  */
-extern void json_tokener_set_flags(struct json_tokener *tok, int flags);
+JSON_EXPORT void json_tokener_set_flags(struct json_tokener *tok, int flags);
 
 /**
  * Parse a string and return a non-NULL json_object if a valid JSON value
@@ -147,17 +184,18 @@ extern void json_tokener_set_flags(struct json_tokener *tok, int flags);
  * called.
  *
  * When a valid JSON value is parsed, a non-NULL json_object will be
- * returned.  Also, json_tokener_get_error() will return json_tokener_success.
- * Be sure to check the type with json_object_is_type() or
- * json_object_get_type() before using the object.
+ * returned, with a reference count of one which belongs to the caller.  Also,
+ * json_tokener_get_error() will return json_tokener_success. Be sure to check
+ * the type with json_object_is_type() or json_object_get_type() before using
+ * the object.
  *
- * @b XXX this shouldn't use internal fields:
  * Trailing characters after the parsed value do not automatically cause an
  * error.  It is up to the caller to decide whether to treat this as an
  * error or to handle the additional characters, perhaps by parsing another
  * json value starting from that point.
  *
- * Extra characters can be detected by comparing the tok->char_offset against
+ * Extra characters can be detected by comparing the value returned by
+ * json_tokener_get_parse_end() against
  * the length of the last len parameter passed in.
  *
  * The tokener does \b not maintain an internal buffer so the caller is
@@ -185,7 +223,7 @@ if (jerr != json_tokener_success)
 	fprintf(stderr, "Error: %s\n", json_tokener_error_desc(jerr));
 	// Handle errors, as appropriate for your application.
 }
-if (tok->char_offset < stringlen) // XXX shouldn't access internal fields
+if (json_tokener_get_parse_end(tok) < stringlen)
 {
 	// Handle extra characters after parsed object as desired.
 	// e.g. issue an error, parse another object from that point, etc...
@@ -198,7 +236,7 @@ if (tok->char_offset < stringlen) // XXX shouldn't access internal fields
  * @param str an string with any valid JSON expression, or portion of.  This does not need to be null terminated.
  * @param len the length of str
  */
-extern struct json_object* json_tokener_parse_ex(struct json_tokener *tok,
+JSON_EXPORT struct json_object* json_tokener_parse_ex(struct json_tokener *tok,
 						 const char *str, int len);
 
 #ifdef __cplusplus

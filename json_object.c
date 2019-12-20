@@ -12,13 +12,15 @@
 
 #include "config.h"
 
+#include "strerror_override.h"
+
 #include <assert.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
 #include <math.h>
-#include <errno.h>
 
 #include "debug.h"
 #include "printbuf.h"
@@ -30,13 +32,11 @@
 #include "json_util.h"
 #include "math_compat.h"
 #include "strdup_compat.h"
+#include "snprintf_compat.h"
 
-#if !defined(HAVE_SNPRINTF) && defined(_MSC_VER)
-  /* MSC has the version as _snprintf */
-# define snprintf _snprintf
-#elif !defined(HAVE_SNPRINTF)
-# error You do not have snprintf on your system.
-#endif /* HAVE_SNPRINTF */
+#if SIZEOF_LONG_LONG != SIZEOF_INT64_T
+#error "The long long type isn't 64-bits"
+#endif
 
 // Don't define this.  It's not thread-safe.
 /* #define REFCOUNT_DEBUG 1 */
@@ -143,11 +143,11 @@ static int json_escape_str(struct printbuf *pb, const char *str, int len, int fl
 		default:
 			if(c < ' ')
 			{
+				char sbuf[7];
 				if(pos - start_offset > 0)
 					printbuf_memappend(pb,
 							   str + start_offset,
 							   pos - start_offset);
-				static char sbuf[7];
 				snprintf(sbuf, sizeof(sbuf),
 					 "\\u00%c%c",
 					 json_hex_chars[c >> 4],
@@ -166,27 +166,47 @@ static int json_escape_str(struct printbuf *pb, const char *str, int len, int fl
 
 /* reference counting */
 
-extern struct json_object* json_object_get(struct json_object *jso)
+struct json_object* json_object_get(struct json_object *jso)
 {
-	if (jso)
-		jso->_ref_count++;
+	if (!jso) return jso;
+
+	// Don't overflow the refcounter.
+	assert(jso->_ref_count < UINT32_MAX);
+
+#if defined(HAVE_ATOMIC_BUILTINS) && defined(ENABLE_THREADING)
+	__sync_add_and_fetch(&jso->_ref_count, 1);
+#else
+	++jso->_ref_count;
+#endif        
+
 	return jso;
 }
 
 int json_object_put(struct json_object *jso)
 {
-	if(jso)
-	{
-		jso->_ref_count--;
-		if(!jso->_ref_count)
-		{
-			if (jso->_user_delete)
-				jso->_user_delete(jso, jso->_userdata);
-			jso->_delete(jso);
-			return 1;
-		}
-	}
-	return 0;
+	if(!jso) return 0;
+
+	/* Avoid invalid free and crash explicitly instead of (silently)
+	 * segfaulting.
+	 */
+	assert(jso->_ref_count > 0);
+
+#if defined(HAVE_ATOMIC_BUILTINS) && defined(ENABLE_THREADING)
+	/* Note: this only allow the refcount to remain correct
+	 * when multiple threads are adjusting it.  It is still an error 
+	 * for a thread to decrement the refcount if it doesn't "own" it,
+	 * as that can result in the thread that loses the race to 0
+	 * operating on an already-freed object.
+	 */
+	if (__sync_sub_and_fetch(&jso->_ref_count, 1) > 0) return 0;
+#else
+	if (--jso->_ref_count > 0) return 0;
+#endif
+
+	if (jso->_user_delete)
+		jso->_user_delete(jso, jso->_userdata);
+	jso->_delete(jso);
+	return 1;
 }
 
 
@@ -258,7 +278,7 @@ void json_object_set_userdata(json_object *jso, void *userdata,
 /* set a custom conversion to string */
 
 void json_object_set_serializer(json_object *jso,
-	json_object_to_json_string_fn to_string_func,
+	json_object_to_json_string_fn *to_string_func,
 	void *userdata,
 	json_object_delete_fn *user_delete)
 {
@@ -375,7 +395,7 @@ static int json_object_object_to_json_string(struct json_object* jso,
 				printbuf_strappend(pb, "\n");
 		}
 		had_children = 1;
-		if (flags & JSON_C_TO_STRING_SPACED)
+		if (flags & JSON_C_TO_STRING_SPACED && !(flags & JSON_C_TO_STRING_PRETTY))
 			printbuf_strappend(pb, " ");
 		indent(pb, level+1, flags);
 		printbuf_strappend(pb, "\"");
@@ -396,7 +416,7 @@ static int json_object_object_to_json_string(struct json_object* jso,
 			printbuf_strappend(pb, "\n");
 		indent(pb,level,flags);
 	}
-	if (flags & JSON_C_TO_STRING_SPACED)
+	if (flags & JSON_C_TO_STRING_SPACED && !(flags & JSON_C_TO_STRING_PRETTY))
 		return printbuf_strappend(pb, /*{*/ " }");
 	else
 		return printbuf_strappend(pb, /*{*/ "}");
@@ -452,13 +472,15 @@ int json_object_object_add_ex(struct json_object* jso,
 	struct json_object *const val,
 	const unsigned opts)
 {
+	struct json_object *existing_value = NULL;
+	struct lh_entry *existing_entry;
+	unsigned long hash;
+
 	assert(json_object_get_type(jso) == json_type_object);
 
 	// We lookup the entry and replace the value, rather than just deleting
 	// and re-adding it, so the existing key remains valid.
-	json_object *existing_value = NULL;
-	struct lh_entry *existing_entry;
-	const unsigned long hash = lh_get_hash(jso->o.c_object, (const void *)key);
+	hash = lh_get_hash(jso->o.c_object, (const void *)key);
 	existing_entry = (opts & JSON_C_OBJECT_ADD_KEY_IS_NEW) ? NULL : 
 			      lh_table_lookup_entry_w_hash(jso->o.c_object,
 							   (const void *)key, hash);
@@ -496,6 +518,11 @@ int json_object_object_length(const struct json_object *jso)
 	return lh_table_length(jso->o.c_object);
 }
 
+size_t json_c_object_sizeof(void)
+{
+	return sizeof(struct json_object);
+}
+
 struct json_object* json_object_object_get(const struct json_object* jso,
 					   const char *key)
 {
@@ -511,7 +538,7 @@ json_bool json_object_object_get_ex(const struct json_object* jso, const char *k
 		*value = NULL;
 
 	if (NULL == jso)
-		return FALSE;
+		return 0;
 
 	switch(jso->o_type)
 	{
@@ -521,7 +548,7 @@ json_bool json_object_object_get_ex(const struct json_object* jso, const char *k
 	default:
 		if (value != NULL)
 			*value = NULL;
-		return FALSE;
+		return 0;
 	}
 }
 
@@ -557,7 +584,7 @@ struct json_object* json_object_new_boolean(json_bool b)
 json_bool json_object_get_boolean(const struct json_object *jso)
 {
 	if (!jso)
-		return FALSE;
+		return 0;
 	switch(jso->o_type)
 	{
 	case json_type_boolean:
@@ -569,7 +596,7 @@ json_bool json_object_get_boolean(const struct json_object *jso)
 	case json_type_string:
 		return (jso->o.c_string.len != 0);
 	default:
-		return FALSE;
+		return 0;
 	}
 }
 
@@ -589,7 +616,7 @@ static int json_object_int_to_json_string(struct json_object* jso,
 					  int flags)
 {
 	/* room for 19 digits, the sign char, and a null term */
-	static char sbuf[21];
+	char sbuf[21];
 	snprintf(sbuf, sizeof(sbuf), "%" PRId64, jso->o.c_int64);
 	return printbuf_memappend (pb, sbuf, strlen(sbuf));
 }
@@ -634,6 +661,10 @@ int32_t json_object_get_int(const struct json_object *jso)
 		return INT32_MAX;
 	return (int32_t) cint64;
   case json_type_double:
+    if (jso->o.c_double <= INT32_MIN)
+      return INT32_MIN;
+    if (jso->o.c_double >= INT32_MAX)
+      return INT32_MAX;
     return (int32_t)jso->o.c_double;
   case json_type_boolean:
     return jso->o.c_boolean;
@@ -648,7 +679,6 @@ int json_object_set_int(struct json_object *jso,int new_value){
 	jso->o.c_int64=new_value;
 	return 1;
 }
-
 
 struct json_object* json_object_new_int64(int64_t i)
 {
@@ -671,6 +701,12 @@ int64_t json_object_get_int64(const struct json_object *jso)
 	case json_type_int:
 		return jso->o.c_int64;
 	case json_type_double:
+		// INT64_MAX can't be exactly represented as a double
+		// so cast to tell the compiler it's ok to round up.
+		if (jso->o.c_double >= (double)INT64_MAX)
+			return INT64_MAX;
+		if (jso->o.c_double <= INT64_MIN)
+			return INT64_MIN;
 		return (int64_t)jso->o.c_double;
 	case json_type_boolean:
 		return jso->o.c_boolean;
@@ -690,7 +726,64 @@ int json_object_set_int64(struct json_object *jso,int64_t new_value){
 	return 1;
 }
 
+int json_object_int_inc(struct json_object *jso, int64_t val) {
+	if (!jso || jso->o_type != json_type_int)
+		return 0;
+	if (val > 0 && jso->o.c_int64 > INT64_MAX - val) {
+		jso->o.c_int64 = INT64_MAX;
+	} else if (val < 0 && jso->o.c_int64 < INT64_MIN - val) {
+		jso->o.c_int64 = INT64_MIN;
+	} else {
+		jso->o.c_int64 += val;
+	}
+	return 1;
+}
+
 /* json_object_double */
+
+#if defined(HAVE___THREAD)
+// i.e. __thread or __declspec(thread)
+static SPEC___THREAD char *tls_serialization_float_format = NULL;
+#endif
+static char *global_serialization_float_format = NULL;
+
+int json_c_set_serialization_double_format(const char *double_format, int global_or_thread)
+{
+	if (global_or_thread == JSON_C_OPTION_GLOBAL)
+	{
+#if defined(HAVE___THREAD)
+		if (tls_serialization_float_format)
+		{
+			free(tls_serialization_float_format);
+			tls_serialization_float_format = NULL;
+		}
+#endif
+		if (global_serialization_float_format)
+			free(global_serialization_float_format);
+		global_serialization_float_format = double_format ? strdup(double_format) : NULL;
+	}
+	else if (global_or_thread == JSON_C_OPTION_THREAD)
+	{
+#if defined(HAVE___THREAD)
+		if (tls_serialization_float_format)
+		{
+			free(tls_serialization_float_format);
+			tls_serialization_float_format = NULL;
+		}
+		tls_serialization_float_format = double_format ? strdup(double_format) : NULL;
+#else
+		_json_c_set_last_err("json_c_set_option: not compiled with __thread support\n");
+		return -1;
+#endif
+	}
+	else
+	{
+		_json_c_set_last_err("json_c_set_option: invalid global_or_thread value: %d\n", global_or_thread);
+		return -1;
+	}
+	return 0;
+}
+
 
 static int json_object_double_to_json_string_format(struct json_object* jso,
 						    struct printbuf *pb,
@@ -698,46 +791,92 @@ static int json_object_double_to_json_string_format(struct json_object* jso,
 						    int flags,
 						    const char *format)
 {
-  char buf[128], *p, *q;
-  int size;
-  double dummy; /* needed for modf() */
-  /* Although JSON RFC does not support
-     NaN or Infinity as numeric values
-     ECMA 262 section 9.8.1 defines
-     how to handle these cases as strings */
-  if(isnan(jso->o.c_double))
-    size = snprintf(buf, sizeof(buf), "NaN");
-  else if(isinf(jso->o.c_double))
-    if(jso->o.c_double > 0)
-      size = snprintf(buf, sizeof(buf), "Infinity");
-    else
-      size = snprintf(buf, sizeof(buf), "-Infinity");
-  else
-    size = snprintf(buf, sizeof(buf),
-        format ? format : 
-          (modf(jso->o.c_double, &dummy) == 0) ? "%.17g.0" : "%.17g",
-          jso->o.c_double);
-  if(size < 0 || size >= (int)sizeof(buf))
-    size = (int)sizeof(buf);
+	char buf[128], *p, *q;
+	int size;
+	/* Although JSON RFC does not support
+	NaN or Infinity as numeric values
+	ECMA 262 section 9.8.1 defines
+	how to handle these cases as strings */
+	if (isnan(jso->o.c_double))
+	{
+		size = snprintf(buf, sizeof(buf), "NaN");
+	}
+	else if (isinf(jso->o.c_double))
+	{
+		if(jso->o.c_double > 0)
+			size = snprintf(buf, sizeof(buf), "Infinity");
+		else
+			size = snprintf(buf, sizeof(buf), "-Infinity");
+	}
+	else
+	{
+		const char *std_format = "%.17g";
+		int format_drops_decimals = 0;
+		int looks_numeric = 0;
 
-  p = strchr(buf, ',');
-  if (p) {
-    *p = '.';
-  } else {
-    p = strchr(buf, '.');
-  }
-  if (p && (flags & JSON_C_TO_STRING_NOZERO)) {
-    /* last useful digit, always keep 1 zero */
-    p++;
-    for (q=p ; *q ; q++) {
-      if (*q!='0') p=q;
-    }
-    /* drop trailing zeroes */
-    *(++p) = 0;
-    size = p-buf;
-  }
-  printbuf_memappend(pb, buf, size);
-  return size;
+		if (!format)
+		{
+#if defined(HAVE___THREAD)
+			if (tls_serialization_float_format)
+				format = tls_serialization_float_format;
+			else
+#endif
+			if (global_serialization_float_format)
+				format = global_serialization_float_format;
+			else
+				format = std_format;
+		}
+		size = snprintf(buf, sizeof(buf), format, jso->o.c_double);
+
+		if (size < 0)
+			return -1;
+
+		p = strchr(buf, ',');
+		if (p)
+			*p = '.';
+		else
+			p = strchr(buf, '.');
+
+		if (format == std_format || strstr(format, ".0f") == NULL)
+			format_drops_decimals = 1;
+
+		looks_numeric = /* Looks like *some* kind of number */
+		    isdigit((unsigned char)buf[0]) ||
+		    (size > 1 && buf[0] == '-' && isdigit((unsigned char)buf[1]));
+
+		if (size < (int)sizeof(buf) - 2 &&
+		    looks_numeric &&
+		    !p && /* Has no decimal point */
+		    strchr(buf, 'e') == NULL && /* Not scientific notation */
+		    format_drops_decimals)
+		{
+			// Ensure it looks like a float, even if snprintf didn't,
+			//  unless a custom format is set to omit the decimal.
+			strcat(buf, ".0");
+			size += 2;
+		}
+		if (p && (flags & JSON_C_TO_STRING_NOZERO))
+		{
+			/* last useful digit, always keep 1 zero */
+			p++;
+			for (q=p ; *q ; q++) {
+				if (*q!='0') p=q;
+			}
+			/* drop trailing zeroes */
+			*(++p) = 0;
+			size = p-buf;
+		}
+	}
+	// although unlikely, snprintf can fail
+	if (size < 0)
+		return -1;
+
+	if (size >= (int)sizeof(buf))
+		// The standard formats are guaranteed not to overrun the buffer,
+		// but if a custom one happens to do so, just silently truncate.
+		size = sizeof(buf) - 1;
+	printbuf_memappend(pb, buf, size);
+	return size;
 }
 
 static int json_object_double_to_json_string_default(struct json_object* jso,
@@ -770,11 +909,12 @@ struct json_object* json_object_new_double(double d)
 
 struct json_object* json_object_new_double_s(double d, const char *ds)
 {
+	char *new_ds;
 	struct json_object *jso = json_object_new_double(d);
 	if (!jso)
 		return NULL;
 
-	char *new_ds = strdup(ds);
+	new_ds = strdup(ds);
 	if (!new_ds)
 	{
 		json_object_generic_delete(jso);
@@ -818,7 +958,10 @@ double json_object_get_double(const struct json_object *jso)
 
     /* if conversion stopped at the first character, return 0.0 */
     if (errPtr == get_string_component(jso))
-        return 0.0;
+    {
+      errno = EINVAL;
+      return 0.0;
+    }
 
     /*
      * Check that the conversion terminated on something sensible
@@ -826,7 +969,10 @@ double json_object_get_double(const struct json_object *jso)
      * For example, { "pay" : 123AB } would parse as 123.
      */
     if (*errPtr != '\0')
-        return 0.0;
+    {
+      errno = EINVAL;
+      return 0.0;
+    }
 
     /*
      * If strtod encounters a string which would exceed the
@@ -844,6 +990,7 @@ double json_object_get_double(const struct json_object *jso)
             cdouble = 0.0;
     return cdouble;
   default:
+    errno = EINVAL;
     return 0.0;
   }
 }
@@ -897,7 +1044,7 @@ struct json_object* json_object_new_string(const char *s)
 	return jso;
 }
 
-struct json_object* json_object_new_string_len(const char *s, int len)
+struct json_object* json_object_new_string_len(const char *s, const int len)
 {
 	char *dstbuf;
 	struct json_object *jso = json_object_new(json_type_string);
@@ -954,8 +1101,8 @@ int json_object_set_string(json_object* jso, const char* s) {
 }
 
 int json_object_set_string_len(json_object* jso, const char* s, int len){
-	if (jso==NULL || jso->o_type!=json_type_string) return 0; 	
 	char *dstbuf; 
+	if (jso==NULL || jso->o_type!=json_type_string) return 0; 	
 	if (len<LEN_DIRECT_STRING_DATA) {
 		dstbuf=jso->o.c_string.str.data;
 		if (jso->o.c_string.len>=LEN_DIRECT_STRING_DATA) free(jso->o.c_string.str.ptr); 
@@ -994,7 +1141,7 @@ static int json_object_array_to_json_string(struct json_object* jso,
 				printbuf_strappend(pb, "\n");
 		}
 		had_children = 1;
-		if (flags & JSON_C_TO_STRING_SPACED)
+		if (flags & JSON_C_TO_STRING_SPACED && !(flags&JSON_C_TO_STRING_PRETTY))
 			printbuf_strappend(pb, " ");
 		indent(pb, level + 1, flags);
 		val = json_object_array_get_idx(jso, ii);
@@ -1011,7 +1158,7 @@ static int json_object_array_to_json_string(struct json_object* jso,
 		indent(pb,level,flags);
 	}
 
-	if (flags & JSON_C_TO_STRING_SPACED)
+	if (flags & JSON_C_TO_STRING_SPACED && !(flags&JSON_C_TO_STRING_PRETTY))
 		return printbuf_strappend(pb, " ]");
 	return printbuf_strappend(pb, "]");
 }
@@ -1072,7 +1219,7 @@ struct json_object* json_object_array_bsearch(
 
 	assert(json_object_get_type(jso) == json_type_array);
 	result = (struct json_object **)array_list_bsearch(
-			(const void **)&key, jso->o.c_array, sort_fn);
+			(const void **)(void *)&key, jso->o.c_array, sort_fn);
 
 	if (!result)
 		return NULL;
@@ -1139,7 +1286,7 @@ static int json_object_all_values_equal(struct json_object* jso1,
 	/* Iterate over jso1 keys and see if they exist and are equal in jso2 */
         json_object_object_foreachC(jso1, iter) {
 		if (!lh_table_lookup_ex(jso2->o.c_object, (void*)iter.key,
-					(void**)&sub))
+					(void**)(void *)&sub))
 			return 0;
 		if (!json_object_equal(iter.val, sub))
 			return 0;
@@ -1148,7 +1295,7 @@ static int json_object_all_values_equal(struct json_object* jso1,
 	/* Iterate over jso2 keys to see if any exist that are not in jso1 */
         json_object_object_foreachC(jso2, iter) {
 		if (!lh_table_lookup_ex(jso1->o.c_object, (void*)iter.key,
-					(void**)&sub))
+					(void**)(void *)&sub))
 			return 0;
         }
 
@@ -1193,5 +1340,171 @@ int json_object_equal(struct json_object* jso1, struct json_object* jso2)
 	};
 
 	return 0;
+}
+
+static int json_object_copy_serializer_data(struct json_object *src, struct json_object *dst)
+{
+	if (!src->_userdata && !src->_user_delete)
+		return 0;
+
+	if (dst->_to_json_string == json_object_userdata_to_json_string)
+	{
+		dst->_userdata = strdup(src->_userdata);
+	}
+	// else if ... other supported serializers ...
+	else
+	{
+		_json_c_set_last_err("json_object_deep_copy: unable to copy unknown serializer data: %p\n", dst->_to_json_string);
+		return -1;
+	}
+	dst->_user_delete = src->_user_delete;
+	return 0;
+}
+
+
+/**
+ * The default shallow copy implementation.  Simply creates a new object of the same
+ * type but does *not* copy over _userdata nor retain any custom serializer.
+ * If custom serializers are in use, json_object_deep_copy() must be passed a shallow copy
+ * implementation that is aware of how to copy them.
+ *
+ * This always returns -1 or 1.  It will never return 2 since it does not copy the serializer.
+ */
+int json_c_shallow_copy_default(json_object *src, json_object *parent, const char *key, size_t index, json_object **dst)
+{
+	switch (src->o_type) {
+	case json_type_boolean:
+		*dst = json_object_new_boolean(src->o.c_boolean);
+		break;
+
+	case json_type_double:
+		*dst = json_object_new_double(src->o.c_double);
+		break;
+
+	case json_type_int:
+		*dst = json_object_new_int64(src->o.c_int64);
+		break;
+
+	case json_type_string:
+		*dst = json_object_new_string(get_string_component(src));
+		break;
+
+	case json_type_object:
+		*dst = json_object_new_object();
+		break;
+
+	case json_type_array:
+		*dst = json_object_new_array();
+		break;
+
+	default:
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (!*dst) {
+		errno = ENOMEM;
+		return -1;
+	}
+	(*dst)->_to_json_string = src->_to_json_string;
+	// _userdata and _user_delete are copied later
+	return 1;
+}
+
+/*
+ * The actual guts of json_object_deep_copy(), with a few additional args
+ * needed so we can keep track of where we are within the object tree.
+ *
+ * Note: caller is responsible for freeing *dst if this fails and returns -1.
+ */
+static int json_object_deep_copy_recursive(struct json_object *src, struct json_object *parent, const char *key_in_parent, size_t index_in_parent, struct json_object **dst, json_c_shallow_copy_fn *shallow_copy)
+{
+	struct json_object_iter iter;
+	size_t src_array_len, ii;
+
+	int shallow_copy_rc = 0;
+	shallow_copy_rc = shallow_copy(src, parent, key_in_parent, index_in_parent, dst);
+	/* -1=error, 1=object created ok, 2=userdata set */
+	if (shallow_copy_rc < 1)
+	{
+		errno = EINVAL;
+		return -1;
+	}
+	assert(*dst != NULL);
+
+	switch (src->o_type) {
+	case json_type_object:
+		json_object_object_foreachC(src, iter) {
+			struct json_object *jso = NULL;
+			/* This handles the `json_type_null` case */
+			if (!iter.val)
+				jso = NULL;
+			else if (json_object_deep_copy_recursive(iter.val, src, iter.key, -1, &jso, shallow_copy) < 0)
+			{
+				json_object_put(jso);
+				return -1;
+			}
+
+			if (json_object_object_add(*dst, iter.key, jso) < 0)
+			{
+				json_object_put(jso);
+				return -1;
+			}
+		}
+		break;
+
+	case json_type_array:
+		src_array_len = json_object_array_length(src);
+		for (ii = 0; ii < src_array_len; ii++) {
+			struct json_object *jso = NULL;
+			struct json_object *jso1 = json_object_array_get_idx(src, ii);
+			/* This handles the `json_type_null` case */
+			if (!jso1)
+				jso = NULL;
+			else if (json_object_deep_copy_recursive(jso1, src, NULL, ii, &jso, shallow_copy) < 0)
+			{
+				json_object_put(jso);
+				return -1;
+			}
+
+			if (json_object_array_add(*dst, jso) < 0)
+			{
+				json_object_put(jso);
+				return -1;
+			}
+		}
+		break;
+
+	default:
+		break;
+		/* else, nothing to do, shallow_copy already did. */
+	}
+
+	if (shallow_copy_rc != 2)
+		return json_object_copy_serializer_data(src, *dst);
+
+	return 0;
+}
+
+int json_object_deep_copy(struct json_object *src, struct json_object **dst, json_c_shallow_copy_fn *shallow_copy)
+{
+	int rc;
+
+	/* Check if arguments are sane ; *dst must not point to a non-NULL object */
+	if (!src || !dst || *dst) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (shallow_copy == NULL)
+		shallow_copy = json_c_shallow_copy_default;
+
+	rc = json_object_deep_copy_recursive(src, NULL, NULL, -1, dst, shallow_copy);
+	if (rc < 0) {
+		json_object_put(*dst);
+		*dst = NULL;
+	}
+
+	return rc;
 }
 

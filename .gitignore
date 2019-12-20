@@ -25,8 +25,10 @@
 /tests/test_cast
 /tests/test_charcase
 /tests/test_compare
+/tests/test_deep_copy
 /tests/test_double_serializer
 /tests/test_float
+/tests/test_int_add
 /tests/test_json_pointer
 /tests/test_locale
 /tests/test_null
@@ -72,16 +74,14 @@
 *.dmg
 *.ipa
 
-/INSTALL
 .deps/
 .libs/
 /aclocal.m4
+/autoconf-archive
 /autom4te.cache
 /config.guess
 /config.h.in
-/json_config.h
 /compile
-/config.h
 /config.log
 /config.status
 /config.sub
@@ -99,3 +99,12 @@
 /missing
 /stamp-h1
 /stamp-h2
+
+# cmake auto-generated files
+/build
+/CMakeCache.txt
+/CMakeFiles
+/cmake_install.cmake
+/include
+/libjson-c.a
+/libjson-c.so

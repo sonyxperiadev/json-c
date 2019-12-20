@@ -23,7 +23,7 @@
 # include <endian.h>    /* attempt to define endianness */
 #endif
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(__MINGW32__)
 # define WIN32_LEAN_AND_MEAN
 # include <windows.h>   /* Get InterlockedCompareExchange */
 #endif
@@ -35,6 +35,10 @@
 static unsigned long lh_char_hash(const void *k);
 static unsigned long lh_perllike_str_hash(const void *k);
 static lh_hash_fn *char_hash_fn = lh_char_hash;
+
+/* comparison functions */
+int lh_char_equal(const void *k1, const void *k2);
+int lh_ptr_equal(const void *k1, const void *k2);
 
 int
 json_global_set_string_hash(const int h)
@@ -50,15 +54,6 @@ json_global_set_string_hash(const int h)
 		return -1;
 	}
 	return 0;
-}
-
-void lh_abort(const char *msg, ...)
-{
-	va_list ap;
-	va_start(ap, msg);
-	vprintf(msg, ap);
-	va_end(ap);
-	exit(1);
 }
 
 static unsigned long lh_ptr_hash(const void *k)
@@ -452,7 +447,7 @@ static unsigned long lh_perllike_str_hash(const void *k)
 
 static unsigned long lh_char_hash(const void *k)
 {
-#if defined _MSC_VER
+#if defined _MSC_VER || defined __MINGW32__
 #define RANDOM_SEED_TYPE LONG
 #else
 #define RANDOM_SEED_TYPE int
@@ -474,10 +469,10 @@ static unsigned long lh_char_hash(const void *k)
 #endif
 #if defined USE_SYNC_COMPARE_AND_SWAP
 		(void)__sync_val_compare_and_swap(&random_seed, -1, seed);
-#elif defined _MSC_VER
+#elif defined _MSC_VER || defined __MINGW32__
 		InterlockedCompareExchange(&random_seed, seed, -1);
 #else
-#warning "racy random seed initializtion if used by multiple threads"
+//#warning "racy random seed initializtion if used by multiple threads"
 		random_seed = seed; /* potentially racy */
 #endif
 	}
@@ -630,22 +625,15 @@ struct lh_entry* lh_table_lookup_entry(struct lh_table *t, const void *k)
 	return lh_table_lookup_entry_w_hash(t, k, lh_get_hash(t, k));
 }
 
-const void* lh_table_lookup(struct lh_table *t, const void *k)
-{
-	void *result;
-	lh_table_lookup_ex(t, k, &result);
-	return result;
-}
-
 json_bool lh_table_lookup_ex(struct lh_table* t, const void* k, void **v)
 {
 	struct lh_entry *e = lh_table_lookup_entry(t, k);
 	if (e != NULL) {
 		if (v != NULL) *v = lh_entry_v(e);
-		return TRUE; /* key found */
+		return 1; /* key found */
 	}
 	if (v != NULL) *v = NULL;
-		return FALSE; /* key not found */
+		return 0; /* key not found */
 }
 
 int lh_table_delete_entry(struct lh_table *t, struct lh_entry *e)
